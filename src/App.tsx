@@ -13,9 +13,10 @@ import ConnectButton from './components/ConnectButton'
 
 import { Web3Provider } from '@ethersproject/providers'
 import { getChainData } from './helpers/utilities'
-import { US_ELECTION_ADDRESS } from './constants'
+import { LIBRARY_ADDRESS } from './constants'
 import { getContract } from './helpers/ethers'
-import USElection from './constants/abis/USElection.json'
+import LibraryAbi from './constants/abis/Library.json'
+import { BigNumber } from 'ethers'
 
 const SLayout = styled.div`
   position: relative;
@@ -60,17 +61,13 @@ interface IAppState {
   chainId: number
   pendingRequest: boolean
   result: any | null
-  electionContract: any | null
+  libraryContract: any | null
   info: any | null
-  currentLeader: string
-  stateName: string
-  votesBiden: number
-  seatsBiden: number
-  votesTrump: number
-  seatsTrump: number
-  seats: number
+  bookList: any[]
+  bookName: string
+  bookId:number
+  bookQuantity: number
   transactionHash: string
-  electionState: string
   errorMsg: string
 }
 
@@ -82,17 +79,13 @@ const INITIAL_STATE: IAppState = {
   chainId: 1,
   pendingRequest: false,
   result: null,
-  electionContract: null,
+  libraryContract: null,
   info: null,
-  currentLeader: '',
-  stateName: '',
-  votesBiden: 0,
-  seatsBiden: 0,
-  votesTrump: 0,
-  seatsTrump: 0,
-  seats: 0,
+  bookList: [],
+  bookName: '',
+  bookId:0,
+  bookQuantity: 0,
   transactionHash: '',
-  electionState: '',
   errorMsg: '',
 }
 
@@ -134,9 +127,9 @@ class App extends React.Component<any, any> {
       ? this.provider.selectedAddress
       : this.provider.accounts[0]
 
-    const electionContract = getContract(
-      US_ELECTION_ADDRESS,
-      USElection.abi,
+    const libraryContract = getContract(
+      LIBRARY_ADDRESS,
+      LibraryAbi.abi,
       library,
       address,
     )
@@ -146,14 +139,10 @@ class App extends React.Component<any, any> {
       chainId: network.chainId,
       address,
       connected: true,
-      electionContract,
+      libraryContract,
     })
 
-    await this.currentLeader()
-
-    await this.getSeats()
-
-    await this.getElectionState()
+    await this.getAllBooks()
 
     await this.subscribeToProviderEvents(this.provider)
   }
@@ -225,72 +214,95 @@ class App extends React.Component<any, any> {
     this.setState({ ...INITIAL_STATE })
   }
 
-  public currentLeader = async () => {
-    const { electionContract } = this.state
-
-    const currentLeader = await electionContract.currentLeader()
-    const currentLeaderString = currentLeader === 1 ? 'Biden' : 'Trump'
-
-    await this.setState({ currentLeader: currentLeaderString })
-  }
-
-  public getElectionState = async () => {
-    const { electionContract } = this.state
-
-    const electionEnded = await electionContract.electionEnded()
-
-    const electionStateString = electionEnded ? 'Ended' : 'Ongoing'
-
-    await this.setState({ electionState: electionStateString })
-  }
-
-  public getSeats = async () => {
-    const { electionContract } = this.state
-
-    const currentSeatsBiden = await electionContract.seats(1)
-    const currentSeatsTrump = await electionContract.seats(2)
-
-    await this.setState({ seatsBiden: currentSeatsBiden })
-    await this.setState({ seatsTrump: currentSeatsTrump })
-  }
-
-  public submitElectionResult = async () => {
-    const { electionContract } = this.state
-
-    await this.setState({ fetching: true })
-
-    const dataArr = [
-      this.state.stateName.toString(),
-      this.state.votesBiden.toString(),
-      this.state.votesTrump.toString(),
-      this.state.seats.toString(),
-    ]
+  public getAllBooks = async () => {
+    const { libraryContract } = this.state
 
     try {
-      const transaction = await electionContract.submitStateResult(dataArr)
+      const libraryArchive = (await libraryContract.GetLibraryArchive()) as any[]
+
+      const mappedResult = libraryArchive.map((book) => {
+        return {
+          id: (book.id as BigNumber).toNumber(),
+          name: book.name,
+          quantity: (book.quantity as BigNumber).toNumber(),
+          exists: book.exists,
+        }
+      })
+
+      this.setState({ bookList: mappedResult })
+    } catch {
+      await this.setState({
+        errorMsg: 'Something went wrong when trying to get the book list!',
+      })
+    }
+  }
+
+  public rentBook = async () => {
+    const { libraryContract } = this.state
+    await this.setState({ fetching: true })
+
+    try {
+      const transaction = await libraryContract.BorrowBook(this.state.bookId)
 
       await this.setState({ transactionHash: transaction.hash })
 
       const transactionReceipt = await transaction.wait()
       if (transactionReceipt.status === 1) {
-        await this.currentLeader()
+        await this.getAllBooks()
       }
     } catch {
-      await this.setState({ errorMsg: 'Something went wrong' })
+      await this.setState({
+        errorMsg: 'Book with that id not found or already rented!',
+      })
     }
+
     await this.setState({ fetching: false })
-    await this.getSeats()
   }
 
-  public endElection = async () => {
-    const { electionContract } = this.state
+  public addBook = async () => {
+    const { libraryContract } = this.state
+
+    await this.setState({ fetching: true })
 
     try {
-      await electionContract.endElection()
+      const transaction = await libraryContract.AddBook(
+        this.state.bookName,
+        this.state.bookQuantity,
+      )
+
+      await this.setState({ transactionHash: transaction.hash })
+
+      const transactionReceipt = await transaction.wait()
+      if (transactionReceipt.status === 1) {
+        await this.getAllBooks()
+      }
     } catch {
-      await this.setState({ errorMsg: 'Something went wrong' })
+      await this.setState({
+        errorMsg: 'Book with the same name already exists!',
+      })
     }
-    await this.getElectionState()
+    await this.setState({ fetching: false })
+  }
+
+  public returnBook = async () => {
+    const { libraryContract } = this.state
+    await this.setState({ fetching: true })
+
+    try {
+      const transaction = await libraryContract.ReturnBook(this.state.bookId)
+
+      await this.setState({ transactionHash: transaction.hash })
+
+      const transactionReceipt = await transaction.wait()
+      if (transactionReceipt.status === 1) {
+        await this.getAllBooks()
+      }
+    } catch {
+      await this.setState({
+        errorMsg: 'Book with that id not found or already returned!',
+      })
+    }
+    await this.setState({ fetching: false })
   }
 
   public handleChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -303,10 +315,9 @@ class App extends React.Component<any, any> {
       connected,
       chainId,
       fetching,
-      stateName,
-      votesBiden,
-      votesTrump,
-      seats,
+      bookName,
+      bookQuantity,
+      bookId
     } = this.state
     return (
       <SLayout>
@@ -343,48 +354,68 @@ class App extends React.Component<any, any> {
                 {!this.state.connected && (
                   <ConnectButton onClick={this.onConnect} />
                 )}
-                <Column center>
-                  Election State is: {this.state.electionState}
-                </Column>
-                <Column center>
-                  Current Leader is: {this.state.currentLeader}
-                </Column>
-                <Column center>
-                  Seats number for Biden: {this.state.seatsBiden}
-                </Column>
-                <Column center>
-                  Seats number for Trump: {this.state.seatsTrump}
-                </Column>
-                <Column>
-                  <input
-                    name="stateName"
-                    value={stateName}
-                    onChange={this.handleChange}
-                  />
-                  <input
-                    name="votesBiden"
-                    value={votesBiden}
-                    onChange={this.handleChange}
-                  />
-                  <input
-                    name="votesTrump"
-                    value={votesTrump}
-                    onChange={this.handleChange}
-                  />
-                  <input
-                    name="seats"
-                    value={seats}
-                    onChange={this.handleChange}
-                  />
-                </Column>
-                <Column>
-                  <Button onClick={this.submitElectionResult}>
-                    Submit results
-                  </Button>
-                </Column>
-                <Column center>
-                  <Button onClick={this.endElection}>End Election</Button>
-                </Column>
+                <Column center>Book List: </Column>
+                <Wrapper>
+                  <table>
+                    <thead>
+                      <tr>
+                        <td>Id</td>
+                        <td>Name</td>
+                        <td>Quantity</td>
+                        <td>Exists</td>
+                      </tr>
+                    </thead>
+                    {this.state.bookList.map((book) => (
+                      <tr key={book.id}>
+                        <td>{book.id}</td>
+                        <td>{book.name}</td>
+                        <td>{book.quantity}</td>
+                        <td>{book.exists.toString()}</td>
+                      </tr>
+                    ))}
+                  </table>
+                </Wrapper>
+                <Wrapper>
+                  <Column>
+                    <input
+                      name="bookName"
+                      value={bookName}
+                      onChange={this.handleChange}
+                    />
+                    <input
+                      name="bookQuantity"
+                      value={bookQuantity}
+                      onChange={this.handleChange}
+                    />
+                  </Column>
+                  <Column>
+                    <Button onClick={this.addBook}>Add book</Button>
+                  </Column>
+                </Wrapper>
+                <Wrapper>
+                  <Column>
+                    <input
+                      name="bookId"
+                      value={bookId}
+                      onChange={this.handleChange}
+                    />
+                  </Column>
+                  <Column center>
+                    <Button onClick={this.rentBook}>Rent Book</Button>
+                  </Column>
+                </Wrapper>
+                <Wrapper>
+                  <Column>
+                    <input
+                      name="bookId"
+                      value={bookId}
+                      onChange={this.handleChange}
+                    />
+                  </Column>
+                  <Column center>
+                    <Button onClick={this.returnBook}>Return Book</Button>
+                  </Column>
+                </Wrapper>
                 <Column center>{this.state.errorMsg}</Column>
               </SLanding>
             )}
